@@ -89,6 +89,8 @@ def get_ydl_opts(url: str, quality="720", is_audio=False):
         'noplaylist': False,
         'concurrent_fragment_downloads': 12,
         'retries': 5,
+        'geo_bypass': True,                    # ← Добавили
+        'geo_bypass_country': 'US',            # ← Пробуем через США
     }
 
     if 'tiktok.com' in url:
