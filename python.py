@@ -17,8 +17,9 @@ DATABASE_URL = "postgresql://postgres:cbvOUgTdLWosjghWTlvprkFZTrIYwGDy@postgres.
 YOUR_ADMIN_ID = 1381500667
 
 # ←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←
-# Если хочешь использовать прокси — вставь сюда (формат: http://user:pass@ip:port)
-PROXY = None   # Пример: "http://123.45.67.89:8080"
+# Вставь сюда прокси, если есть (формат http://ip:port или http://user:pass@ip:port)
+PROXY = None  
+# Пример: PROXY = "http://123.45.67.89:8080"
 # ←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←
 
 bot = Bot(token=TOKEN)
@@ -34,8 +35,6 @@ cur = conn.cursor()
 cur.execute("""
 CREATE TABLE IF NOT EXISTS users (user_id BIGINT PRIMARY KEY, downloads_today INTEGER DEFAULT 0, 
 last_reset DATE DEFAULT CURRENT_DATE, is_premium BOOLEAN DEFAULT FALSE, premium_until TIMESTAMP);
-CREATE TABLE IF NOT EXISTS payments (id SERIAL PRIMARY KEY, user_id BIGINT, amount INTEGER, 
-tariff TEXT, date TIMESTAMP DEFAULT CURRENT_TIMESTAMP);
 CREATE TABLE IF NOT EXISTS temp_links (link_id TEXT PRIMARY KEY, url TEXT, created TIMESTAMP DEFAULT CURRENT_TIMESTAMP);
 """)
 
@@ -59,7 +58,7 @@ def get_link(link_id: str):
     result = cur.fetchone()
     return dict(result) if result else None
 
-# ====================== DOWNLOAD FUNCTIONS ======================
+# ====================== DOWNLOAD ======================
 async def progress_hook(d, msg):
     if d['status'] == 'downloading':
         try:
@@ -79,7 +78,7 @@ def get_ydl_opts(url: str, quality="720", is_audio=False):
         'retries': 10,
         'geo_bypass': True,
         'geo_bypass_country': 'US',
-        'extractor_args': {'youtube': {'player_client': ['ios', 'web', 'android']}},
+        'extractor_args': {'youtube': {'player_client': ['ios', 'web', 'android', 'web_embedded']}},
     }
 
     if PROXY:
@@ -116,7 +115,7 @@ async def download_media(url: str, quality="720", is_audio=False, progress_msg=N
         return filename, info.get('title', 'Медиа'), size_mb
 
 
-# ====================== ЛИМИТЫ И HANDLERS (без изменений) ======================
+# ====================== ЛИМИТЫ И HANDLERS ======================
 async def check_limit(user_id: int, message) -> bool:
     cur.execute("UPDATE users SET downloads_today = 0 WHERE last_reset < CURRENT_DATE")
     cur.execute("UPDATE users SET last_reset = CURRENT_DATE WHERE last_reset < CURRENT_DATE")
@@ -137,20 +136,9 @@ async def check_limit(user_id: int, message) -> bool:
     return True
 
 
-# (Остальной код handlers остаётся тот же — start, premium, handle_links, download_callback)
-
 @dp.message(Command("start"))
 async def start(message: types.Message):
-    await message.answer("🎥 <b>MediaFlow Bot</b>\n\nОтправь ссылку.", parse_mode="HTML")
-
-@dp.message(Command("premium"))
-async def premium_cmd(message: types.Message):
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="1 месяц — 149 Stars", callback_data="tariff:1m")],
-        [InlineKeyboardButton(text="3 месяца — 399 Stars", callback_data="tariff:3m")],
-        [InlineKeyboardButton(text="Навсегда — 999 Stars", callback_data="tariff:lifetime")],
-    ])
-    await message.answer("🌟 Выбери Premium:", reply_markup=kb)
+    await message.answer("🎥 <b>MediaFlow Bot</b>\n\nОтправь ссылку на видео.", parse_mode="HTML")
 
 @dp.message(F.text)
 async def handle_links(message: types.Message):
@@ -173,6 +161,7 @@ async def handle_links(message: types.Message):
 async def download_callback(callback: types.CallbackQuery):
     if not await check_limit(callback.from_user.id, callback.message):
         return
+
     _, link_id, mode = callback.data.split(":")
     link_data = get_link(link_id)
     if not link_data:
@@ -205,7 +194,7 @@ async def download_callback(callback: types.CallbackQuery):
         await progress_msg.delete()
 
     except Exception as e:
-        await progress_msg.edit_text(f"❌ Ошибка: {str(e)[:150]}")
+        await progress_msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
