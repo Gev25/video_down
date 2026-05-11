@@ -8,11 +8,12 @@ import os
 import subprocess
 from uuid import uuid4
 from datetime import datetime, timedelta
-from pymongo import MongoClient
+import psycopg2
+from psycopg2.extras import DictCursor
 
 # ====================== НАСТРОЙКИ ======================
 TOKEN = "8704315086:AAEERRGJXDW_7jDDnYark03jX4MqVRIlM1c"
-MONGO_URI = "mongodb://localhost:27017/"
+DATABASE_URL = "postgresql://postgres:cbvOUgTdLWosjghWTlvprkFZTrIYwGDy@postgres.railway.internal:5432/railway"
 YOUR_ADMIN_ID = 1381500667
 
 bot = Bot(token=TOKEN)
@@ -20,32 +21,55 @@ dp = Dispatcher()
 
 os.makedirs("downloads", exist_ok=True)
 
-client = MongoClient(MONGO_URI)
-db = client["downloader_bot"]
-users_col = db["users"]
-payments_col = db["payments"]
-links_col = db["temp_links"]
+# ====================== POSTGRESQL ======================
+conn = psycopg2.connect(DATABASE_URL, cursor_factory=DictCursor)
+conn.autocommit = True
+cur = conn.cursor()
 
-# ====================== MONGO ======================
+# Создание таблиц
+cur.execute("""
+CREATE TABLE IF NOT EXISTS users (
+    user_id BIGINT PRIMARY KEY,
+    downloads_today INTEGER DEFAULT 0,
+    last_reset DATE DEFAULT CURRENT_DATE,
+    is_premium BOOLEAN DEFAULT FALSE,
+    premium_until TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS payments (
+    id SERIAL PRIMARY KEY,
+    user_id BIGINT,
+    amount INTEGER,
+    tariff TEXT,
+    date TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS temp_links (
+    link_id TEXT PRIMARY KEY,
+    url TEXT,
+    created TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+""")
+
 def get_user(user_id: int):
-    user = users_col.find_one({"user_id": user_id})
+    cur.execute("SELECT * FROM users WHERE user_id = %s", (user_id,))
+    user = cur.fetchone()
     if not user:
-        user = {"user_id": user_id, "downloads_today": 0, "last_reset": datetime.now().date().isoformat(),
-                "is_premium": False, "premium_until": None}
-        users_col.insert_one(user)
-    return user
-
-def reset_daily_downloads():
-    today = datetime.now().date().isoformat()
-    users_col.update_many({"last_reset": {"$lt": today}}, {"$set": {"downloads_today": 0, "last_reset": today}})
+        cur.execute("INSERT INTO users (user_id) VALUES (%s) ON CONFLICT DO NOTHING", (user_id,))
+        conn.commit()
+        return {"user_id": user_id, "downloads_today": 0, "last_reset": datetime.now().date(), "is_premium": False, "premium_until": None}
+    return dict(user)
 
 def save_link(url: str):
     link_id = str(uuid4())[:12]
-    links_col.insert_one({"link_id": link_id, "url": url, "created": datetime.now()})
+    cur.execute("INSERT INTO temp_links (link_id, url) VALUES (%s, %s)", (link_id, url))
+    conn.commit()
     return link_id
 
 def get_link(link_id: str):
-    return links_col.find_one({"link_id": link_id})
+    cur.execute("SELECT * FROM temp_links WHERE link_id = %s", (link_id,))
+    result = cur.fetchone()
+    return dict(result) if result else None
 
 # ====================== DOWNLOAD FUNCTIONS ======================
 async def progress_hook(d, msg):
@@ -65,28 +89,22 @@ def get_ydl_opts(url: str, quality="720", is_audio=False):
         'noplaylist': False,
         'concurrent_fragment_downloads': 12,
         'retries': 5,
-        'cookiefile': 'cookies.txt',           # создай cookies.txt для Instagram
     }
 
-    # TikTok
     if 'tiktok.com' in url:
         opts.update({
             'format': 'best',
             'extractor_args': {'TikTok': {'api_hostname': 'api16-normal-c-useast1a.tiktokv.com'}},
         })
-    # Instagram
     elif 'instagram' in url or 'instagr.am' in url:
         opts['format'] = 'best[height<=1080]'
-    # YouTube и остальные
     else:
-        if is_audio:
-            opts['format'] = 'bestaudio/best'
-        else:
-            height = {"360": 360, "720": 720, "1080": 1080}.get(quality, 720)
-            opts['format'] = f'best[height<={height}]'
+        height = {"360": 360, "720": 720, "1080": 1080}.get(quality, 720)
+        opts['format'] = f'best[height<={height}]'
 
     if is_audio:
         opts.update({
+            'format': 'bestaudio/best',
             'postprocessors': [{'key': 'FFmpegExtractAudio', 'preferredcodec': 'mp3', 'preferredquality': '192'}],
         })
 
@@ -127,21 +145,26 @@ async def download_media(url: str, quality="720", is_audio=False, progress_msg=N
 
 # ====================== ЛИМИТЫ ======================
 async def check_limit(user_id: int, message) -> bool:
-    reset_daily_downloads()
+    # Сброс лимита в новом дне
+    cur.execute("UPDATE users SET downloads_today = 0 WHERE last_reset < CURRENT_DATE")
+    cur.execute("UPDATE users SET last_reset = CURRENT_DATE WHERE last_reset < CURRENT_DATE")
+    conn.commit()
+
     user = get_user(user_id)
-    
+
     if user_id == YOUR_ADMIN_ID:
         return True
-    
+
     if user.get("is_premium") and user.get("premium_until"):
-        if datetime.fromisoformat(user["premium_until"]) > datetime.now():
+        if user["premium_until"] > datetime.now():
             return True
 
     if user.get("downloads_today", 0) >= 5:
         await message.answer("⛔ Лимит 5 скачиваний в день исчерпан.\n\n/premium")
         return False
 
-    users_col.update_one({"user_id": user_id}, {"$inc": {"downloads_today": 1}})
+    cur.execute("UPDATE users SET downloads_today = downloads_today + 1 WHERE user_id = %s", (user_id,))
+    conn.commit()
     return True
 
 
@@ -177,7 +200,7 @@ async def handle_links(message: types.Message):
         link_id = save_link(url)
         kb = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="⚡ Быстро (360p)", callback_data=f"dl:{link_id}:360")],
-            [InlineKeyboardButton(text="🎥 720p (рекомендуется)", callback_data=f"dl:{link_id}:720")],
+            [InlineKeyboardButton(text="🎥 720p", callback_data=f"dl:{link_id}:720")],
             [InlineKeyboardButton(text="🎥 1080p", callback_data=f"dl:{link_id}:1080")],
             [InlineKeyboardButton(text="🔊 MP3", callback_data=f"dl:{link_id}:audio")],
         ])
@@ -202,7 +225,6 @@ async def download_callback(callback: types.CallbackQuery):
 
         file_path, title, size_mb = await download_media(url, quality, is_audio, progress_msg)
 
-        # Сжатие видео
         if not is_audio and file_path.endswith(('.mp4', '.webm', '.mov')):
             file_path = await compress_video(file_path, progress_msg)
             size_mb = os.path.getsize(file_path) / (1024 * 1024)
@@ -223,7 +245,7 @@ async def download_callback(callback: types.CallbackQuery):
     except Exception as e:
         error = str(e).lower()
         if "ffmpeg" in error or "ffprobe" in error:
-            await progress_msg.edit_text("❌ Для MP3 и сжатия видео нужен ffmpeg.\nУстанови: winget install ffmpeg")
+            await progress_msg.edit_text("❌ Для MP3 нужен ffmpeg.\nУстанови: winget install ffmpeg")
         else:
             await progress_msg.edit_text(f"❌ Ошибка: {str(e)[:150]}")
 
