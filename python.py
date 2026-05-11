@@ -90,8 +90,13 @@ def get_ydl_opts(url: str, quality="720", is_audio=False):
         'concurrent_fragment_downloads': 12,
         'retries': 10,
         'geo_bypass': True,
-        'geo_bypass_country': 'US',           # Пробуем через США
-        'extractor_args': {'youtube': {'player_client': ['ios', 'web']}},  # Новый способ обхода
+        'geo_bypass_country': 'US',
+        'extractor_args': {
+            'youtube': {
+                'player_client': ['ios', 'web', 'android'],   # несколько клиентов
+                'skip': ['dash', 'hls']                       # иногда помогает
+            }
+        },
     }
 
     if 'tiktok.com' in url:
