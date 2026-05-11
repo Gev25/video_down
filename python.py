@@ -77,12 +77,14 @@ def get_ydl_opts(url: str, quality="720", is_audio=False):
         'concurrent_fragment_downloads': 12,
         'retries': 10,
         'geo_bypass': True,
-        'geo_bypass_country': 'US',
         'extractor_args': {'youtube': {'player_client': ['ios', 'web', 'android', 'web_embedded']}},
     }
 
-    if PROXY:
-        opts['proxy'] = PROXY
+    # ←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←
+    # Вставь сюда рабочий прокси (если есть)
+    # opts['proxy'] = "http://ip:port"          # HTTP
+    # opts['proxy'] = "socks5://ip:port"        # SOCKS5
+    # ←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←
 
     if 'tiktok.com' in url:
         opts.update({'format': 'best'})
